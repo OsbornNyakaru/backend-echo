@@ -13,13 +13,22 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
 
 const app = express();
 const server = http.createServer(app);
-// // Initialize Socket.IO for real-time communication
-// const io = new Server(server, {
-//   cors: { origin: '*' } // TODO: Restrict in production
-// });
+// Initialize Socket.IO for real-time communication
+const io = new Server(server, {
+  cors: {
+    origin: process.env.FRONTEND_ORIGIN || 'https://cosmic-meerkat-92b882.netlify.app/', // fallback for local dev
+    methods: ['GET', 'POST'], // you can specify allowed methods
+    credentials: true // if you use cookies/auth
+  }
+});
 
 // Middleware setup
-app.use(cors()); // Enable CORS for all origins (adjust for production)
+app.use(cors({
+  origin: process.env.FRONTEND_ORIGIN || 'https://cosmic-meerkat-92b882.netlify.app/',
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
+
 app.use(express.json()); // Parse JSON request bodies
 app.set('view engine', 'ejs'); // Set EJS as the view engine
 app.set('views', __dirname + '/views'); // Set views directory
@@ -29,13 +38,11 @@ app.use(express.static('public')); // Serve static files from 'public'
 const sessionRoutes = require('./routes/sessions');
 const messageRoutes = require('./routes/messages');
 const participantRoutes = require('./routes/participants');
-const tavusRoutes = require('./routes/tavus');
-const personaRoutes = require('./routes/personas');
+
 app.use('/api/sessions', sessionRoutes); // Session management API
 app.use('/api/messages', messageRoutes); // Chat messages API
 app.use('/api/participants', participantRoutes); // Participants API
-app.use('/api/tavus', tavusRoutes); // Tavus integration API
-app.use('/api/personas', personaRoutes); // Persona management API
+
 
 // Health check endpoint for uptime monitoring
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
