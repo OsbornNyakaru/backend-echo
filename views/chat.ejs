@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Echoroom Chat</title>
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <h2>Session ID: <%= sessionId %></h2>
+  <h2>Room: <%= session.category %></h2>
+  <p><em><%= session.description %></em></p>
+
+  <div id="messages">
+    <% messages.forEach(msg => { %>
+      <p><strong><%= msg.sender %>:</strong> <%= msg.text %></p>
+    <% }) %>
+  </div>
+
+  <form id="chatForm">
+    <input type="text" id="sender" placeholder="Your name" required />
+    <input type="text" id="message" placeholder="Your message" required />
+    <button type="submit">Send</button>
+  </form>
+
+  <script>
+    const socket = io();
+    const sessionId = "<%= sessionId %>";
+    socket.emit('joinRoom', sessionId);
+
+    const form = document.getElementById('chatForm');
+    const messagesDiv = document.getElementById('messages');
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const sender = document.getElementById('sender').value;
+      const text = document.getElementById('message').value;
+      socket.emit('sendMessage', { session_id: sessionId, sender, text });
+      document.getElementById('message').value = '';
+    });
+
+    socket.on('receiveMessage', (msg) => {
+      const p = document.createElement('p');
+      p.innerHTML = `<strong>${msg.sender}:</strong> ${msg.text}`;
+      messagesDiv.appendChild(p);
+    });
+  </script>
+</body>
+</html>
