@@ -13,10 +13,10 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
 
 const app = express();
 const server = http.createServer(app);
-// Initialize Socket.IO for real-time communication
-const io = new Server(server, {
-  cors: { origin: '*' } // TODO: Restrict in production
-});
+// // Initialize Socket.IO for real-time communication
+// const io = new Server(server, {
+//   cors: { origin: '*' } // TODO: Restrict in production
+// });
 
 // Middleware setup
 app.use(cors()); // Enable CORS for all origins (adjust for production)
