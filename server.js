@@ -16,7 +16,7 @@ const server = http.createServer(app);
 // Initialize Socket.IO for real-time communication
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_ORIGIN || 'https://cosmic-meerkat-92b882.netlify.app/', // fallback for local dev
+    origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173/', // fallback for local dev
     methods: ['GET', 'POST'], // you can specify allowed methods
     credentials: true // if you use cookies/auth
   }
@@ -24,7 +24,7 @@ const io = new Server(server, {
 
 // Middleware setup
 app.use(cors({
-  origin: process.env.FRONTEND_ORIGIN || 'https://cosmic-meerkat-92b882.netlify.app/',
+  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173/',
   methods: ['GET', 'POST'],
   credentials: true
 }));
