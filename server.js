@@ -16,15 +16,28 @@ const server = http.createServer(app);
 // Initialize Socket.IO for real-time communication
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173/', // fallback for local dev
-    methods: ['GET', 'POST'], // you can specify allowed methods
-    credentials: true // if you use cookies/auth
+    origin: process.env.FRONTEND_ORIGIN,
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
+const allowedOrigins = [
+  'https://cosmic-meerkat-92b882.netlify.app', // your deployed frontend
+  'http://localhost:5173',                     // your local dev frontend
+];
+
 // Middleware setup
 app.use(cors({
-  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173/',
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps, curl, etc.)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST'],
   credentials: true
 }));
