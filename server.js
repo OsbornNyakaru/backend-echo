@@ -51,10 +51,12 @@ app.use(express.static('public')); // Serve static files from 'public'
 const sessionRoutes = require('./routes/sessions');
 const messageRoutes = require('./routes/messages');
 const participantRoutes = require('./routes/participants');
+const voiceRoutes = require('./routes/voice');
 
 app.use('/api/sessions', sessionRoutes); // Session management API
 app.use('/api/messages', messageRoutes); // Chat messages API
 app.use('/api/participants', participantRoutes); // Participants API
+app.use('/api/voice', voiceRoutes); //Voice API
 
 
 // Health check endpoint for uptime monitoring
