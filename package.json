@@ -17,16 +17,21 @@
   "dependencies": {
     "@daily-co/daily-js": "^0.80.0",
     "@supabase/supabase-js": "^2.50.0",
+    "axios": "^1.10.0",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "ejs": "^3.1.10",
     "express": "^5.1.0",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.1.0",
     "livekit-server-sdk": "^2.13.0",
-    "node-fetch": "^2.6.7",
+    "morgan": "^1.10.0",
+    "node-fetch": "^2.7.0",
     "socket.io": "^4.8.1",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
-    "@types/node": "^20.11.30"
+    "@types/node": "^20.11.30",
+    "nodemon": "^3.0.2"
   }
 }
