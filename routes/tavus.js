@@ -475,34 +475,71 @@ router.get('/avatar/:personaId/url', validateTavusApiKey, async (req, res) => {
       sampleData: avatarData ? JSON.stringify(avatarData).substring(0, 200) + '...' : null
     });
 
-    // For demo purposes, let's return a sample video URL if no real URL is found
+    // Prioritize image URLs first, then video URLs
     let avatarUrl = null;
+    let isStaticImage = false;
 
-    // Try different possible field names for the video URL
-    if (avatarData.video_url) {
-      avatarUrl = avatarData.video_url;
-    } else if (avatarData.videoUrl) {
-      avatarUrl = avatarData.videoUrl;
-    } else if (avatarData.url) {
-      avatarUrl = avatarData.url;
-    } else if (avatarData.avatar_url) {
-      avatarUrl = avatarData.avatar_url;
-    } else if (avatarData.download_url) {
-      avatarUrl = avatarData.download_url;
-    } else if (avatarData.preview_video_url) {
-      avatarUrl = avatarData.preview_video_url;
-    } else if (avatarData.sample_video_url) {
-      avatarUrl = avatarData.sample_video_url;
+    // First, try to find image URLs from Tavus
+    if (avatarData.image_url) {
+      avatarUrl = avatarData.image_url;
+      isStaticImage = true;
+      console.log('🖼️ Found Tavus image URL:', avatarUrl);
+    } else if (avatarData.thumbnail_url) {
+      avatarUrl = avatarData.thumbnail_url;
+      isStaticImage = true;
+      console.log('🖼️ Found Tavus thumbnail URL:', avatarUrl);
+    } else if (avatarData.preview_image_url) {
+      avatarUrl = avatarData.preview_image_url;
+      isStaticImage = true;
+      console.log('🖼️ Found Tavus preview image URL:', avatarUrl);
+    } else if (avatarData.avatar_image_url) {
+      avatarUrl = avatarData.avatar_image_url;
+      isStaticImage = true;
+      console.log('🖼️ Found Tavus avatar image URL:', avatarUrl);
+    }
+    
+    // If no image found, try video URLs
+    if (!avatarUrl) {
+      if (avatarData.video_url) {
+        avatarUrl = avatarData.video_url;
+        isStaticImage = false;
+        console.log('🎬 Found Tavus video URL:', avatarUrl);
+      } else if (avatarData.videoUrl) {
+        avatarUrl = avatarData.videoUrl;
+        isStaticImage = false;
+        console.log('🎬 Found Tavus videoUrl:', avatarUrl);
+      } else if (avatarData.url) {
+        avatarUrl = avatarData.url;
+        isStaticImage = false;
+        console.log('🎬 Found Tavus URL:', avatarUrl);
+      } else if (avatarData.avatar_url) {
+        avatarUrl = avatarData.avatar_url;
+        isStaticImage = false;
+        console.log('🎬 Found Tavus avatar URL:', avatarUrl);
+      } else if (avatarData.download_url) {
+        avatarUrl = avatarData.download_url;
+        isStaticImage = false;
+        console.log('🎬 Found Tavus download URL:', avatarUrl);
+      } else if (avatarData.preview_video_url) {
+        avatarUrl = avatarData.preview_video_url;
+        isStaticImage = false;
+        console.log('🎬 Found Tavus preview video URL:', avatarUrl);
+      } else if (avatarData.sample_video_url) {
+        avatarUrl = avatarData.sample_video_url;
+        isStaticImage = false;
+        console.log('🎬 Found Tavus sample video URL:', avatarUrl);
+      }
     }
 
-    // If no avatar URL found, provide a demo video for testing
+    // If no Tavus URL found, provide a demo image
     if (!avatarUrl) {
-      console.log('⚠️ No avatar URL found in Tavus response, using demo video');
+      console.log('⚠️ No avatar URL found in Tavus response, using demo image');
       
-      // Use a sample video URL for demo purposes
-      avatarUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4";
+      // Use a high-quality AI avatar image for demo purposes
+      avatarUrl = "https://images.pexels.com/photos/1043474/pexels-photo-1043474.jpeg?auto=compress&cs=tinysrgb&w=1260&h=750&dpr=2";
+      isStaticImage = true;
       
-      console.log('🎬 Using demo video URL:', avatarUrl);
+      console.log('🖼️ Using demo image URL:', avatarUrl);
 
       return res.json({ 
         success: true, 
@@ -510,7 +547,8 @@ router.get('/avatar/:personaId/url', validateTavusApiKey, async (req, res) => {
         personaId: personaId,
         timestamp: new Date().toISOString(),
         isDemo: true,
-        message: "Using demo video - Tavus avatar URL not found in API response",
+        isStaticImage: true,
+        message: "Using demo image - Tavus avatar URL not found in API response",
         // Include debug info in development
         ...(process.env.NODE_ENV === 'development' && {
           debug: {
@@ -521,7 +559,7 @@ router.get('/avatar/:personaId/url', validateTavusApiKey, async (req, res) => {
       });
     }
 
-    console.log('🎬 Avatar URL found:', avatarUrl);
+    console.log(`${isStaticImage ? '🖼️' : '🎬'} Avatar URL found:`, avatarUrl);
 
     // Return in the format your frontend expects
     res.json({ 
@@ -530,6 +568,7 @@ router.get('/avatar/:personaId/url', validateTavusApiKey, async (req, res) => {
       personaId: personaId,
       timestamp: new Date().toISOString(),
       isDemo: false,
+      isStaticImage: isStaticImage,
       // Include additional metadata if available
       ...(avatarData.status && { status: avatarData.status }),
       ...(avatarData.created_at && { createdAt: avatarData.created_at })
