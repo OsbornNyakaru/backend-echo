@@ -45,7 +45,7 @@ app.use(cors({
       return callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: ['GET', 'POST'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true
 }));
 
@@ -125,6 +125,10 @@ io.on('connection', (socket) => {
         is_speaking: false,
         is_muted: false
       });
+
+      // Store user info on the socket for later use
+      socket.session_id = session_id;
+      socket.user_id = user_id;
     } catch (error) {
       console.error('Error in joinRoom:', error);
       socket.emit('error', { message: 'Failed to join room' });
@@ -223,8 +227,28 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     console.log('🔴 User disconnected:', socket.id);
+
+    // Only attempt to remove if we have the info
+    if (socket.user_id && socket.session_id) {
+      try {
+        const { error: deleteError } = await supabase
+          .from('participants')
+          .delete()
+          .eq('user_id', socket.user_id)
+          .eq('session_id', socket.session_id);
+
+        if (deleteError) {
+          console.error('Error removing participant on disconnect:', deleteError.message);
+        } else {
+          // Notify others in the room
+          io.to(socket.session_id).emit('user-left', { user_id: socket.user_id });
+        }
+      } catch (error) {
+        console.error('Error in disconnect cleanup:', error);
+      }
+    }
   });
 
   socket.on('error', (error) => {
