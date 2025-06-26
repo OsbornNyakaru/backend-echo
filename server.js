@@ -1,10 +1,12 @@
 // Import required modules and initialize environment variables
+console.log('Starting server.js...');
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 require('dotenv').config();
 const http = require('http');
 const { Server } = require('socket.io');
+const { getModeratorReply } = require('./utils/moderator');
 
 // Check for required environment variables
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
@@ -36,6 +38,7 @@ const allowedOrigins = [
 ];
 
 // Middleware setup
+console.log('Setting up middleware...');
 app.use(cors({
   origin: function (origin, callback) {
     // allow requests with no origin (like mobile apps, curl, etc.)
@@ -43,6 +46,7 @@ app.use(cors({
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     } else {
+      console.warn('Blocked by CORS:', origin);
       return callback(new Error('Not allowed by CORS'));
     }
   },
@@ -56,6 +60,7 @@ app.set('views', __dirname + '/views'); // Set views directory
 app.use(express.static('public')); // Serve static files from 'public'
 
 // Import and mount route handlers
+console.log('Mounting route handlers...');
 const sessionRoutes = require('./routes/sessions');
 const messageRoutes = require('./routes/messages');
 const participantRoutes = require('./routes/participants');
@@ -73,9 +78,13 @@ app.use('/api/participants', participantRoutes); // Participants API
 // app.use('/api/voice', voiceRoutes); //Voice API
 
 // Health check endpoint for uptime monitoring
-app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/api/health', (req, res) => {
+  console.log('Health check endpoint hit');
+  res.json({ status: 'ok' });
+});
 
 // Initialize Supabase client for database operations
+console.log('Initializing Supabase client...');
 const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
@@ -90,7 +99,6 @@ const badWords = [
   'asshat', 'nutsack', 'buttfuck', 'shitface', 'cockhead', 'fuckface', 'fucktard', 'cocksucker',
   'dickface', 'cumdumpster', 'fucknut', 'asswipe', 'crackhead', 'tard', 'hoe', 'knobhead'
 ];
-
 
 function containsBadWords(text) {
   const lowerText = text.toLowerCase();
@@ -116,70 +124,79 @@ io.on('connection', (socket) => {
 
   // User joins a session/room
   socket.on('joinRoom', async (data) => {
+    console.log('joinRoom event received:', data);
     const { session_id, user_id, username, mood } = data;
 
     // Inactivity Moderator: New feat
     // Avoid multiple intervals for the same session
-  if (sessionTimers.has(sessionId)) return;
-
-  // Fetch session start time
-  const { data: session } = await supabase
-    .from('sessions')
-    .select('*')
-    .eq('id', sessionId)
-    .single();
-
-  const interval = setInterval(async () => {
-    const { data: messages } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('session_id', sessionId)
-      .order('timestamp', { ascending: false })
-      .limit(5);
-
-    const lastMessage = messages[0];
-    const now = Date.now();
-
-    if (!lastMessage) {
-      // No conversation yet. If >1 min since session start, spark a convo
-      const sessionStart = new Date(session.created_at).getTime();
-      if (now - sessionStart > 1 * 60 * 1000) {
-        const modText = "Hi there 👋 Just checking in — what brings you here today?";
-        await supabase.from('messages').insert([
-          { session_id: sessionId, sender: 'moderator', text: modText }
-        ]);
-
-        io.to(sessionId).emit('receiveMessage', {
-          session_id: sessionId,
-          sender: 'moderator',
-          text: modText,
-          timestamp: new Date().toISOString()
-        });
-      }
-    } else {
-      // Messages exist. Check for inactivity > 3 min
-      const lastTime = new Date(lastMessage.timestamp).getTime();
-      const isInactive = now - lastTime > 3 * 60 * 1000;
-
-      if (isInactive) {
-        const reversed = messages.reverse(); // for chronological order
-        const modReply = await getModeratorReply(reversed, session.category);
-
-        await supabase.from('messages').insert([
-          { session_id: sessionId, sender: 'moderator', text: modReply }
-        ]);
-
-        io.to(sessionId).emit('receiveMessage', {
-          session_id: sessionId,
-          sender: 'moderator',
-          text: modReply,
-          timestamp: new Date().toISOString()
-        });
-      }
+    if (sessionTimers.has(session_id)) {
+      console.log(`Session timer already exists for session_id: ${session_id}`);
+      return;
     }
-  }, 60 * 1000); // Check every minute
 
-  sessionTimers.set(sessionId, interval);
+    // Fetch session start time
+    const { data: session } = await supabase
+      .from('sessions')
+      .select('*')
+      .eq('id', session_id)
+      .single();
+    console.log('Fetched session for inactivity moderator:', session);
+
+    const interval = setInterval(async () => {
+      const { data: messages } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('session_id', session_id)
+        .order('timestamp', { ascending: false })
+        .limit(5);
+      console.log('Checked recent messages for inactivity:', messages);
+
+      const lastMessage = messages[0];
+      const now = Date.now();
+
+      if (!lastMessage) {
+        // No conversation yet. If >1 min since session start, spark a convo
+        const sessionStart = new Date(session.created_at).getTime();
+        if (now - sessionStart > 1 * 60 * 1000) {
+          const modText = "Hi there 👋 Just checking in — what brings you here today?";
+          await supabase.from('messages').insert([
+            { session_id: session_id, sender: 'moderator', text: modText }
+          ]);
+          console.log('Moderator sparked conversation due to inactivity.');
+
+          io.to(session_id).emit('receiveMessage', {
+            session_id: session_id,
+            sender: 'moderator',
+            text: modText,
+            timestamp: new Date().toISOString()
+          });
+        }
+      } else {
+        // Messages exist. Check for inactivity > 3 min
+        const lastTime = new Date(lastMessage.timestamp).getTime();
+        const isInactive = now - lastTime > 3 * 60 * 1000;
+
+        if (isInactive) {
+          const reversed = messages.reverse(); // for chronological order
+          const modReply = await getModeratorReply(reversed, session.category);
+          console.log('Moderator replying due to inactivity:', modReply);
+
+          await supabase.from('messages').insert([
+            { session_id: session_id, sender: 'moderator', text: modReply }
+          ]);
+
+          io.to(session_id).emit('receiveMessage', {
+            session_id: session_id,
+            sender: 'moderator',
+            text: modReply,
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+    }, 60 * 1000); // Check every minute
+
+    sessionTimers.set(session_id, interval);
+    console.log(`Session timer set for session_id: ${session_id}`);
 
     try {
       // Validate session existence
@@ -188,13 +205,11 @@ io.on('connection', (socket) => {
         .select('id')
         .eq('id', session_id)
         .single();
-
       if (fetchError) {
         console.error(`Error fetching session ${session_id}:`, fetchError.message);
         socket.emit('error', { message: 'Session not found' });
         return;
       }
-
       socket.join(session_id); // Join the socket.io room
       console.log(`User ${user_id} (${username}) joined session ${session_id} with mood ${mood}`);
 
@@ -203,12 +218,12 @@ io.on('connection', (socket) => {
         .from('participants')
         .select('*')
         .eq('session_id', session_id);
-
       if (participantsError) {
         console.error('Error fetching participants:', participantsError.message);
         socket.emit('error', { message: 'Failed to fetch participants' });
         return;
       }
+      console.log('Participants in session:', participantsData);
 
       // Notify the user and others in the room
       socket.emit('room-joined', { session_id, participants: participantsData });
@@ -233,6 +248,7 @@ io.on('connection', (socket) => {
 
   // User leaves a session/room
   socket.on('leaveRoom', async (data) => {
+    console.log('leaveRoom event received:', data);
     const { session_id, user_id } = data;
     try {
       socket.leave(session_id);
@@ -244,9 +260,10 @@ io.on('connection', (socket) => {
         .delete()
         .eq('user_id', user_id)
         .eq('session_id', session_id);
-
       if (deleteError) {
         console.error('Error removing participant:', deleteError.message);
+      } else {
+        console.log(`Participant ${user_id} removed from session ${session_id}`);
       }
 
       // Notify others in the room
@@ -258,105 +275,105 @@ io.on('connection', (socket) => {
 
   // Handle sending and broadcasting chat messages
   socket.on('sendMessage', async ({ session_id, sender, text, user_id, type = 'text' }) => {
+    console.log('sendMessage event received:', { session_id, sender, text, user_id, type });
     const originalText = text;
-  const filteredText = filterBadWords(text);
+    const filteredText = filterBadWords(text);
 
-  // 1. Save filtered message to DB
-  const { data: savedMsg, error } = await supabase
-    .from('messages')
-    .insert([{ session_id, sender, text: filteredText }])
-    .select()
-    .single();
-
-  if (error) {
-    console.error('DB Error:', error.message);
-    return;
-  }
-
-  // 2. Emit user message FIRST
-  io.to(session_id).emit('receiveMessage', savedMsg);
-
-  // 3. Handle mod summon
-  if (originalText.toLowerCase().includes('@mod')) {
-    const { data: history } = await supabase
+    // 1. Save filtered message to DB
+    const { data: savedMsg, error } = await supabase
       .from('messages')
-      .select('*')
-      .eq('session_id', session_id)
-      .order('timestamp', { ascending: false })
-      .limit(5);
-
-    const { data: sessionMeta } = await supabase
-      .from('sessions')
-      .select('*')
-      .eq('id', session_id)
-      .single();
-
-    const modReply = await getModeratorReply(history.reverse(), sessionMeta?.category);
-
-    const { data: modMessage } = await supabase
-      .from('messages')
-      .insert([{ session_id, sender: 'moderator', text: modReply }])
+      .insert([{ session_id, sender, text: filteredText, user_id }])
       .select()
       .single();
+    if (error) {
+      console.error('DB Error:', error.message);
+      return;
+    }
+    console.log('Message saved to DB:', savedMsg);
 
-    io.to(session_id).emit('receiveMessage', modMessage);
-    return;
-  }
+    // 2. Emit user message FIRST
+    io.to(session_id).emit('receiveMessage', savedMsg);
 
-  // 4. If profanity was detected, warn + have mod respond
-  if (containsBadWords(originalText)) {
-    let strikes = userStrikes.get(socket.id) || 0;
-    strikes++;
-    userStrikes.set(socket.id, strikes);
+    // 3. Handle mod summon
+    if (originalText.toLowerCase().includes('@mod')) {
+      console.log('Moderator summoned in message.');
+      const { data: history } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('session_id', session_id)
+        .order('timestamp', { ascending: false })
+        .limit(5);
+      const { data: sessionMeta } = await supabase
+        .from('sessions')
+        .select('*')
+        .eq('id', session_id)
+        .single();
+      const modReply = await getModeratorReply(history.reverse(), sessionMeta?.category);
+      const { data: modMessage } = await supabase
+        .from('messages')
+        .insert([{ session_id, sender: 'moderator', text: modReply }])
+        .select()
+        .single();
+      io.to(session_id).emit('receiveMessage', modMessage);
+      return;
+    }
 
-    // Private warning -- TODO
-    io.to(socket.id).emit('warning', {
-      message: `⚠️ Inappropriate language detected. Strike ${strikes}/3`
-    });
+    // 4. If profanity was detected, warn + have mod respond
+    if (containsBadWords(originalText)) {
+      let strikes = userStrikes.get(socket.id) || 0;
+      strikes++;
+      userStrikes.set(socket.id, strikes);
+      console.warn(`Profanity detected from ${sender}. Strike ${strikes}/3`);
 
-    // Public moderator warning
-    const modText = `@${sender}, please watch your language. This is strike ${strikes}/3.`;
-    const { data: modMsg } = await supabase
-      .from('messages')
-      .insert([{ session_id, sender: 'moderator', text: modText }])
-      .select()
-      .single();
-
-    io.to(session_id).emit('receiveMessage', modMsg);
-
-    // Kick after 3 strikes
-    if (strikes >= 3) {
-      const kickMsg = `@${sender} has been removed from the chat for repeated violations.`;
-      await supabase.from('messages').insert([
-        { session_id, sender: 'moderator', text: kickMsg }
-      ]);
-      io.to(session_id).emit('receiveMessage', {
-        session_id,
-        sender: 'moderator',
-        text: kickMsg,
-        timestamp: new Date().toISOString()
+      // Private warning -- TODO
+      io.to(socket.id).emit('warning', {
+        message: `⚠️ Inappropriate language detected. Strike ${strikes}/3`
       });
 
-      io.to(session_id).emit('userKicked', { user: sender });
-      socket.leave(session_id);
-      socket.disconnect(true);
+      // Public moderator warning
+      const modText = `@${sender}, please watch your language. This is strike ${strikes}/3.`;
+      const { data: modMsg } = await supabase
+        .from('messages')
+        .insert([{ session_id, sender: 'moderator', text: modText }])
+        .select()
+        .single();
+      io.to(session_id).emit('receiveMessage', modMsg);
+
+      // Kick after 3 strikes
+      if (strikes >= 3) {
+        const kickMsg = `@${sender} has been removed from the chat for repeated violations.`;
+        await supabase.from('messages').insert([
+          { session_id, sender: 'moderator', text: kickMsg }
+        ]);
+        io.to(session_id).emit('receiveMessage', {
+          session_id,
+          sender: 'moderator',
+          text: kickMsg,
+          timestamp: new Date().toISOString()
+        });
+        io.to(session_id).emit('userKicked', { user: sender });
+        socket.leave(session_id);
+        socket.disconnect(true);
+      }
     }
-  }
-});
+  });
 
   // Typing indicators
   socket.on('typing-start', (data) => {
+    console.log('typing-start event:', data);
     const { session_id, user_id, username } = data;
     socket.to(session_id).emit('typing-start', { user_id, username });
   });
 
   socket.on('typing-stop', (data) => {
+    console.log('typing-stop event:', data);
     const { session_id, user_id } = data;
     socket.to(session_id).emit('typing-stop', { user_id });
   });
 
   // Voice status updates (emit only to the room)
   socket.on('voice-status', async (data) => {
+    console.log('voice-status event:', data);
     const { userId, isSpeaking, isMuted } = data;
     try {
       // Update participant voice status in DB
@@ -364,11 +381,11 @@ io.on('connection', (socket) => {
         .from('participants')
         .update({ is_speaking: isSpeaking, is_muted: isMuted })
         .eq('user_id', userId);
-
       if (error) {
         console.error('Error updating voice status:', error.message);
+      } else {
+        console.log(`Voice status updated for user ${userId}`);
       }
-
       // Emit to the relevant room
       const session_id = Array.from(socket.rooms).find(room => room !== socket.id);
       if (session_id) {
@@ -381,6 +398,7 @@ io.on('connection', (socket) => {
 
   // Message reactions
   socket.on('message-reaction', async (data) => {
+    console.log('message-reaction event:', data);
     const { messageId, reaction, userId } = data;
     try {
       io.emit('message-reaction', { messageId, reaction, userId });
@@ -392,7 +410,6 @@ io.on('connection', (socket) => {
   socket.on('disconnect', async () => {
     console.log('🔴 User disconnected:', socket.id);
     userStrikes.delete(socket.id); // Cleanup strikes
-    
     // Only attempt to remove if we have the info
     if (socket.user_id && socket.session_id) {
       try {
@@ -401,10 +418,10 @@ io.on('connection', (socket) => {
           .delete()
           .eq('user_id', socket.user_id)
           .eq('session_id', socket.session_id);
-
         if (deleteError) {
           console.error('Error removing participant on disconnect:', deleteError.message);
         } else {
+          console.log(`Participant ${socket.user_id} removed from session ${socket.session_id} on disconnect.`);
           // Notify others in the room
           io.to(socket.session_id).emit('user-left', { user_id: socket.user_id });
         }
@@ -421,58 +438,63 @@ io.on('connection', (socket) => {
 
 // General error handling middleware for Express
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error('Express error handler:', err.stack);
   res.status(500).send('Something broke!');
 });
 
 // EJS server-rendered chat room page
 app.get('/session/:id', async (req, res) => {
+  console.log('GET /session/:id called with id:', req.params.id);
   const sessionId = req.params.id;
   const { data: session, error: sessionError } = await supabase
     .from('sessions')
     .select('*')
     .eq('id', sessionId)
     .single();
-
-  if (sessionError) return res.status(404).send('Session not found');
-
+  if (sessionError) {
+    console.error('Session not found:', sessionError.message);
+    return res.status(404).send('Session not found');
+  }
   const { data: messages, error: messagesError } = await supabase
     .from('messages')
     .select('*')
     .eq('session_id', sessionId)
     .order('timestamp', { ascending: true });
-
-  if (messagesError) return res.status(500).send('DB Error');
-
+  if (messagesError) {
+    console.error('DB Error fetching messages:', messagesError.message);
+    return res.status(500).send('DB Error');
+  }
+  console.log(`Rendering chat for session ${sessionId} with ${messages.length} messages.`);
   res.render('chat', { sessionId, session, messages });
 });
 
 // EJS server-rendered landing page
 app.get('/', async (req, res) => {
+  console.log('GET / (landing page) called');
   const { data: sessions, error } = await supabase
     .from('sessions')
     .select('*')
     .order('created_at', { ascending: false });
-
   if (error) {
     console.error('Supabase error:', error.message);
     return res.status(500).send('Database error');
   }
-
+  console.log(`Rendering landing page with ${sessions.length} sessions.`);
   res.render('landing', { sessions });
 });
 
 // REST API endpoint to get all sessions
 app.get('/api/sessions', async (req, res) => {
+  console.log('GET /api/sessions called');
   const { data: sessions, error } = await supabase
     .from('sessions')
     .select('*')
     .order('created_at', { ascending: false });
-
   if (error) {
     console.error('Supabase error fetching sessions:', error.message);
     return res.status(500).json({ error: 'Database error' });
   }
+  console.log(`Returning ${sessions.length} sessions.`);
   res.json(sessions);
 });
 
