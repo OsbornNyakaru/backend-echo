@@ -125,11 +125,11 @@ io.on('connection', (socket) => {
   // User joins a session/room
   socket.on('joinRoom', async (data) => {
     console.log('joinRoom event received:', data);
-    const { session_id, user_id, username, mood } = data;
+    const { session_id: sessionId, user_id, username, mood } = data;
 
     // Inactivity Moderator: New feat
     // Avoid multiple intervals for the same session
-    if (sessionTimers.has(session_id)) {
+    if (sessionTimers.has(sessionId)) {
       console.log(`Session timer already exists for session_id: ${session_id}`);
       return;
     }
@@ -138,7 +138,7 @@ io.on('connection', (socket) => {
     const { data: session } = await supabase
       .from('sessions')
       .select('*')
-      .eq('id', session_id)
+      .eq('id', sessionId)
       .single();
     console.log('Fetched session for inactivity moderator:', session);
 
@@ -160,7 +160,7 @@ io.on('connection', (socket) => {
         if (now - sessionStart > 1 * 60 * 1000) {
           const modText = "Hi there 👋 Just checking in — what brings you here today?";
           await supabase.from('messages').insert([
-            { session_id: session_id, sender: 'moderator', text: modText }
+            { session_id: sessionId, sender: 'moderator', text: modText }
           ]);
           console.log('Moderator sparked conversation due to inactivity.');
 
@@ -195,29 +195,29 @@ io.on('connection', (socket) => {
     }
   }, 60 * 1000); // Check every minute
 
-    sessionTimers.set(session_id, interval);
-    console.log(`Session timer set for session_id: ${session_id}`);
+    sessionTimers.set(sessionId, interval);
+    console.log(`Session timer set for session_id: ${sessionId}`);
 
     try {
       // Validate session existence
-      const { data: existingSession, error: fetchError } = await supabase
+      const { error: fetchError } = await supabase
         .from('sessions')
         .select('id')
-        .eq('id', session_id)
+        .eq('id', sessionId)
         .single();
       if (fetchError) {
-        console.error(`Error fetching session ${session_id}:`, fetchError.message);
+        console.error(`Error fetching session ${sessionId}:`, fetchError.message);
         socket.emit('error', { message: 'Session not found' });
         return;
       }
-      socket.join(session_id); // Join the socket.io room
-      console.log(`User ${user_id} (${username}) joined session ${session_id} with mood ${mood}`);
+      socket.join(sessionId); // Join the socket.io room
+      console.log(`User ${user_id} (${username}) joined session ${sessionId} with mood ${mood}`);
 
       // Fetch current participants
       const { data: participantsData, error: participantsError } = await supabase
         .from('participants')
         .select('*')
-        .eq('session_id', session_id);
+        .eq('session_id', sessionId);
       if (participantsError) {
         console.error('Error fetching participants:', participantsError.message);
         socket.emit('error', { message: 'Failed to fetch participants' });
@@ -226,8 +226,8 @@ io.on('connection', (socket) => {
       console.log('Participants in session:', participantsData);
 
       // Notify the user and others in the room
-      socket.emit('room-joined', { session_id, participants: participantsData });
-      socket.to(session_id).emit('user-joined', {
+      socket.emit('room-joined', { sessionId, participants: participantsData });
+      socket.to(sessionId).emit('user-joined', {
         user_id,
         user_name: username,
         username,
@@ -238,7 +238,7 @@ io.on('connection', (socket) => {
       });
 
       // Store user info on the socket for later use
-      socket.session_id = session_id;
+      socket.session_id = sessionId;
       socket.user_id = user_id;
     } catch (error) {
       console.error('Error in joinRoom:', error);
@@ -249,25 +249,25 @@ io.on('connection', (socket) => {
   // User leaves a session/room
   socket.on('leaveRoom', async (data) => {
     console.log('leaveRoom event received:', data);
-    const { session_id, user_id } = data;
+    const { session_id: sessionId, user_id } = data;
     try {
-      socket.leave(session_id);
-      console.log(`User ${user_id} left session ${session_id}`);
+      socket.leave(sessionId);
+      console.log(`User ${user_id} left session ${sessionId}`);
 
       // Remove participant from DB
       const { error: deleteError } = await supabase
         .from('participants')
         .delete()
         .eq('user_id', user_id)
-        .eq('session_id', session_id);
+        .eq('session_id', sessionId);
       if (deleteError) {
         console.error('Error removing participant:', deleteError.message);
       } else {
-        console.log(`Participant ${user_id} removed from session ${session_id}`);
+        console.log(`Participant ${user_id} removed from session ${sessionId}`);
       }
 
       // Notify others in the room
-      io.to(session_id).emit('user-left', { user_id });
+      io.to(sessionId).emit('user-left', { user_id });
     } catch (error) {
       console.error('Error in leaveRoom:', error);
     }
@@ -282,7 +282,7 @@ io.on('connection', (socket) => {
     // 1. Save filtered message to DB
     const { data: savedMsg, error } = await supabase
       .from('messages')
-      .insert([{ session_id, sender, text: filteredText, user_id }])
+      .insert([{ session_id: session_id, sender, text: filteredText, user_id }])
       .select()
       .single();
     if (error) {
