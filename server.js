@@ -107,6 +107,9 @@ function filterBadWords(text) {
 // Track strikes: socket.id -> count
 const userStrikes = new Map();
 
+// Inactivity Moderator
+const sessionTimers = new Map();
+
 // Socket.IO event handlers for real-time features
 io.on('connection', (socket) => {
   console.log('🟢 A user connected:', socket.id);
@@ -114,6 +117,70 @@ io.on('connection', (socket) => {
   // User joins a session/room
   socket.on('joinRoom', async (data) => {
     const { session_id, user_id, username, mood } = data;
+
+    // Inactivity Moderator: New feat
+    // Avoid multiple intervals for the same session
+  if (sessionTimers.has(sessionId)) return;
+
+  // Fetch session start time
+  const { data: session } = await supabase
+    .from('sessions')
+    .select('*')
+    .eq('id', sessionId)
+    .single();
+
+  const interval = setInterval(async () => {
+    const { data: messages } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('session_id', sessionId)
+      .order('timestamp', { ascending: false })
+      .limit(5);
+
+    const lastMessage = messages[0];
+    const now = Date.now();
+
+    if (!lastMessage) {
+      // No conversation yet. If >1 min since session start, spark a convo
+      const sessionStart = new Date(session.created_at).getTime();
+      if (now - sessionStart > 1 * 60 * 1000) {
+        const modText = "Hi there 👋 Just checking in — what brings you here today?";
+        await supabase.from('messages').insert([
+          { session_id: sessionId, sender: 'moderator', text: modText }
+        ]);
+
+        io.to(sessionId).emit('receiveMessage', {
+          session_id: sessionId,
+          sender: 'moderator',
+          text: modText,
+          timestamp: new Date().toISOString()
+        });
+      }
+    } else {
+      // Messages exist. Check for inactivity > 3 min
+      const lastTime = new Date(lastMessage.timestamp).getTime();
+      const isInactive = now - lastTime > 3 * 60 * 1000;
+
+      if (isInactive) {
+        const reversed = messages.reverse(); // for chronological order
+        const modReply = await getModeratorReply(reversed, session.category);
+
+        await supabase.from('messages').insert([
+          { session_id: sessionId, sender: 'moderator', text: modReply }
+        ]);
+
+        io.to(sessionId).emit('receiveMessage', {
+          session_id: sessionId,
+          sender: 'moderator',
+          text: modReply,
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+  }, 60 * 1000); // Check every minute
+
+  sessionTimers.set(sessionId, interval);
+
     try {
       // Validate session existence
       const { data: existingSession, error: fetchError } = await supabase
@@ -191,43 +258,91 @@ io.on('connection', (socket) => {
 
   // Handle sending and broadcasting chat messages
   socket.on('sendMessage', async ({ session_id, sender, text, user_id, type = 'text' }) => {
-    if (containsBadWords(text)) {
-      let strikes = userStrikes.get(socket.id) || 0;
-      strikes++;
-      userStrikes.set(socket.id, strikes);
+    const originalText = text;
+  const filteredText = filterBadWords(text);
 
-      io.to(socket.id).emit('warning', {
-        message: `⚠️ Inappropriate language detected. Strike ${strikes}/3`
+  // 1. Save filtered message to DB
+  const { data: savedMsg, error } = await supabase
+    .from('messages')
+    .insert([{ session_id, sender, text: filteredText }])
+    .select()
+    .single();
+
+  if (error) {
+    console.error('DB Error:', error.message);
+    return;
+  }
+
+  // 2. Emit user message FIRST
+  io.to(session_id).emit('receiveMessage', savedMsg);
+
+  // 3. Handle mod summon
+  if (originalText.toLowerCase().includes('@mod')) {
+    const { data: history } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('session_id', session_id)
+      .order('timestamp', { ascending: false })
+      .limit(5);
+
+    const { data: sessionMeta } = await supabase
+      .from('sessions')
+      .select('*')
+      .eq('id', session_id)
+      .single();
+
+    const modReply = await getModeratorReply(history.reverse(), sessionMeta?.category);
+
+    const { data: modMessage } = await supabase
+      .from('messages')
+      .insert([{ session_id, sender: 'moderator', text: modReply }])
+      .select()
+      .single();
+
+    io.to(session_id).emit('receiveMessage', modMessage);
+    return;
+  }
+
+  // 4. If profanity was detected, warn + have mod respond
+  if (containsBadWords(originalText)) {
+    let strikes = userStrikes.get(socket.id) || 0;
+    strikes++;
+    userStrikes.set(socket.id, strikes);
+
+    // Private warning -- TODO
+    io.to(socket.id).emit('warning', {
+      message: `⚠️ Inappropriate language detected. Strike ${strikes}/3`
+    });
+
+    // Public moderator warning
+    const modText = `@${sender}, please watch your language. This is strike ${strikes}/3.`;
+    const { data: modMsg } = await supabase
+      .from('messages')
+      .insert([{ session_id, sender: 'moderator', text: modText }])
+      .select()
+      .single();
+
+    io.to(session_id).emit('receiveMessage', modMsg);
+
+    // Kick after 3 strikes
+    if (strikes >= 3) {
+      const kickMsg = `@${sender} has been removed from the chat for repeated violations.`;
+      await supabase.from('messages').insert([
+        { session_id, sender: 'moderator', text: kickMsg }
+      ]);
+      io.to(session_id).emit('receiveMessage', {
+        session_id,
+        sender: 'moderator',
+        text: kickMsg,
+        timestamp: new Date().toISOString()
       });
 
-      if (strikes >= 3) {
-        io.to(session_id).emit('userKicked', { user: sender });
-        socket.leave(session_id);
-        socket.disconnect(true);
-        return;
-      }
+      io.to(session_id).emit('userKicked', { user: sender });
+      socket.leave(session_id);
+      socket.disconnect(true);
     }
-    const filteredText = filterBadWords(text);
-
-    try {
-      // Save message to DB
-      const { data, error } = await supabase
-        .from('messages')
-        .insert([{ session_id, sender, text: filteredText, user_id, type }])
-        .select()
-        .single();
-
-      if (error) {
-        console.error('DB Error saving message:', error.message);
-        return;
-      }
-
-      console.log('Message saved to database:', data);
-      io.to(session_id).emit('receiveMessage', data); // Broadcast to room
-    } catch (error) {
-      console.error('Error in sendMessage:', error);
-    }
-  });
+  }
+});
 
   // Typing indicators
   socket.on('typing-start', (data) => {

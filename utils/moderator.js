@@ -1,5 +1,4 @@
 const axios = require('axios');
-console.log('Mistral API Key:', process.env.MISTRAL_API_KEY);
 
 const SYSTEM_PROMPTS = {
   Hopeful: 'You are an empathetic moderator bringing hope and optimism to the conversation.',
@@ -11,37 +10,50 @@ const SYSTEM_PROMPTS = {
   Books: 'You moderate thoughtful and curious book discussions.'
 };
 
-async function getModeratorReply(messages = [], category = 'General') {
-  const promptBase = SYSTEM_PROMPTS[category] || `You are a friendly and respectful AI moderator in the "${category}" room.`;
+async function getModeratorReply(messages = [], category = 'General', isDirectCall = false) {
+  const promptBase = SYSTEM_PROMPTS[category] || `You are a kind and attentive AI moderator in the "${category}" room.`;
 
-  // Format messages as chat history (6 recent messages)
-  const history = messages.slice(-6).map(msg => ({
-    role: msg.sender === 'moderator' ? 'assistant' : 'user',
-    content: msg.text || msg.cleaned_text || ''
-  }));
+  const recentMessages = messages
+    .filter(msg => msg.sender !== 'moderator')
+    .slice(-5)
+    .map(msg => `${msg.sender}: ${msg.text || msg.cleaned_text || ''}`)
+    .join('\n');
 
-  const body = {
+  const prompt = `
+${promptBase}
+
+${isDirectCall
+  ? `Someone directly requested support by mentioning "@mod". Respond with one helpful coping mechanism, motivational insight, or actionable suggestion. Be empathetic, warm, and emotionally supportive.`
+  : `Below are recent messages in the room. Reflect on the tone and encourage continued participation in a thoughtful and natural way.`}
+
+Chat History:
+${recentMessages}
+
+Moderator:
+`;
+
+  const payload = {
     model: 'mistral-medium',
     messages: [
       { role: 'system', content: promptBase },
-      ...history,
-      { role: 'user', content: 'Say something helpful or encouraging.' }
-    ]
+      { role: 'user', content: prompt }
+    ],
+    temperature: 0.7
   };
 
   try {
-    const { data } = await axios.post('https://api.mistral.ai/v1/chat/completions', body, {
+    const { data } = await axios.post('https://api.mistral.ai/v1/chat/completions', payload, {
       headers: {
         Authorization: `Bearer ${process.env.MISTRAL_API_KEY}`,
         'Content-Type': 'application/json'
       }
     });
 
-    const reply = data.choices[0]?.message?.content?.trim();
-    return reply || 'How’s everyone doing today? 😊';
+    const reply = data.choices?.[0]?.message?.content?.trim();
+    return reply || "I'm here if anyone wants to talk. 💬";
   } catch (err) {
     console.error('AI Moderator Error:', err.message);
-    return 'Hey! Just checking in—how are you feeling?';
+    return 'Just checking in—how’s everyone doing so far? 😊';
   }
 }
 
