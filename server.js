@@ -5,6 +5,7 @@ const axios = require('axios');
 require('dotenv').config();
 const http = require('http');
 const { Server } = require('socket.io');
+const { getModeratorReply } = require('./utils/moderator');
 
 // Check for required environment variables
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
