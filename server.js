@@ -79,6 +79,34 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+// === Custom Bad Words Filter ===
+const badWords = [
+  'fuck', 'shit', 'bitch', 'asshole', 'bastard', 'dick', 'piss', 'cunt',
+  'crap', 'slut', 'whore', 'fag', 'nigger', 'retard', 'motherfucker', 'cock',
+  'fucker', 'douche', 'bollocks', 'arsehole', 'twat', 'wanker', 'suck my', 'dickhead',
+  'puta', 'mierda', 'idiot', 'moron', 'jackass', 'dumbass', 'prick', 'skank',
+  'cum', 'shithead', 'dildo', 'bastardo', 'imbécil', 'coño', 'chingada', 'pendejo',
+  'verga', 'malparido', 'zorra', 'estúpido', 'puta madre', 'mierdoso', 'tonto', 'culero',
+  'asshat', 'nutsack', 'buttfuck', 'shitface', 'cockhead', 'fuckface', 'fucktard', 'cocksucker',
+  'dickface', 'cumdumpster', 'fucknut', 'asswipe', 'crackhead', 'tard', 'hoe', 'knobhead'
+];
+
+
+function containsBadWords(text) {
+  const lowerText = text.toLowerCase();
+  return badWords.some(word => lowerText.includes(word));
+}
+function filterBadWords(text) {
+  let filtered = text;
+  badWords.forEach(word => {
+    const regex = new RegExp(`\\b${word}\\b`, 'gi');
+    filtered = filtered.replace(regex, '****');
+  });
+  return filtered;
+}
+// Track strikes: socket.id -> count
+const userStrikes = new Map();
+
 // Socket.IO event handlers for real-time features
 io.on('connection', (socket) => {
   console.log('🟢 A user connected:', socket.id);
@@ -163,11 +191,29 @@ io.on('connection', (socket) => {
 
   // Handle sending and broadcasting chat messages
   socket.on('sendMessage', async ({ session_id, sender, text, user_id, type = 'text' }) => {
+    if (containsBadWords(text)) {
+      let strikes = userStrikes.get(socket.id) || 0;
+      strikes++;
+      userStrikes.set(socket.id, strikes);
+
+      io.to(socket.id).emit('warning', {
+        message: `⚠️ Inappropriate language detected. Strike ${strikes}/3`
+      });
+
+      if (strikes >= 3) {
+        io.to(session_id).emit('userKicked', { user: sender });
+        socket.leave(session_id);
+        socket.disconnect(true);
+        return;
+      }
+    }
+    const filteredText = filterBadWords(text);
+
     try {
       // Save message to DB
       const { data, error } = await supabase
         .from('messages')
-        .insert([{ session_id, sender, text, user_id, type }])
+        .insert([{ session_id, sender, text: filteredText, user_id, type }])
         .select()
         .single();
 
@@ -230,7 +276,8 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', async () => {
     console.log('🔴 User disconnected:', socket.id);
-
+    userStrikes.delete(socket.id); // Cleanup strikes
+    
     // Only attempt to remove if we have the info
     if (socket.user_id && socket.session_id) {
       try {
