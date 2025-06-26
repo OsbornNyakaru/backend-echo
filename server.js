@@ -80,37 +80,6 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// === Custom Bad Words Filter ===
-const badWords = [
-  'fuck', 'shit', 'bitch', 'asshole', 'bastard', 'dick', 'piss', 'cunt',
-  'crap', 'slut', 'whore', 'fag', 'nigger', 'retard', 'motherfucker', 'cock',
-  'fucker', 'douche', 'bollocks', 'arsehole', 'twat', 'wanker', 'suck my', 'dickhead',
-  'puta', 'mierda', 'idiot', 'moron', 'jackass', 'dumbass', 'prick', 'skank',
-  'cum', 'shithead', 'dildo', 'bastardo', 'imbécil', 'coño', 'chingada', 'pendejo',
-  'verga', 'malparido', 'zorra', 'estúpido', 'puta madre', 'mierdoso', 'tonto', 'culero',
-  'asshat', 'nutsack', 'buttfuck', 'shitface', 'cockhead', 'fuckface', 'fucktard', 'cocksucker',
-  'dickface', 'cumdumpster', 'fucknut', 'asswipe', 'crackhead', 'tard', 'hoe', 'knobhead'
-];
-
-
-function containsBadWords(text) {
-  const lowerText = text.toLowerCase();
-  return badWords.some(word => lowerText.includes(word));
-}
-function filterBadWords(text) {
-  let filtered = text;
-  badWords.forEach(word => {
-    const regex = new RegExp(`\\b${word}\\b`, 'gi');
-    filtered = filtered.replace(regex, '****');
-  });
-  return filtered;
-}
-// Track strikes: socket.id -> count
-const userStrikes = new Map();
-
-// Inactivity Moderator
-const sessionTimers = new Map();
-
 // Socket.IO event handlers for real-time features
 io.on('connection', (socket) => {
   console.log('🟢 A user connected:', socket.id);
@@ -258,92 +227,26 @@ io.on('connection', (socket) => {
   });
 
   // Handle sending and broadcasting chat messages
-  socket.on('sendMessage', async ({ session_id, sender, text }) => {
-    const originalText = text;
-  const filteredText = filterBadWords(text);
+  socket.on('sendMessage', async ({ session_id, sender, text, user_id, type = 'text' }) => {
+    try {
+      // Save message to DB
+      const { data, error } = await supabase
+        .from('messages')
+        .insert([{ session_id, sender, text, user_id, type }])
+        .select()
+        .single();
 
-  // 1. Save filtered message to DB
-  const { data: savedMsg, error } = await supabase
-    .from('messages')
-    .insert([{ session_id, sender, text: filteredText }])
-    .select()
-    .single();
+      if (error) {
+        console.error('DB Error saving message:', error.message);
+        return;
+      }
 
-  if (error) {
-    console.error('DB Error:', error.message);
-    return;
-  }
-
-  // 2. Emit user message FIRST
-  io.to(session_id).emit('receiveMessage', savedMsg);
-
-  // 3. Handle mod summon
-  if (originalText.toLowerCase().includes('@mod')) {
-    const { data: history } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('session_id', session_id)
-      .order('timestamp', { ascending: false })
-      .limit(5);
-
-    const { data: sessionMeta } = await supabase
-      .from('sessions')
-      .select('*')
-      .eq('id', session_id)
-      .single();
-
-    const modReply = await getModeratorReply(history.reverse(), sessionMeta?.category);
-
-    const { data: modMessage } = await supabase
-      .from('messages')
-      .insert([{ session_id, sender: 'moderator', text: modReply }])
-      .select()
-      .single();
-
-    io.to(session_id).emit('receiveMessage', modMessage);
-    return;
-  }
-
-  // 4. If profanity was detected, warn + have mod respond
-  if (containsBadWords(originalText)) {
-    let strikes = userStrikes.get(socket.id) || 0;
-    strikes++;
-    userStrikes.set(socket.id, strikes);
-
-    // Private warning -- TODO
-    io.to(socket.id).emit('warning', {
-      message: `⚠️ Inappropriate language detected. Strike ${strikes}/3`
-    });
-
-    // Public moderator warning
-    const modText = `@${sender}, please watch your language. This is strike ${strikes}/3.`;
-    const { data: modMsg } = await supabase
-      .from('messages')
-      .insert([{ session_id, sender: 'moderator', text: modText }])
-      .select()
-      .single();
-
-    io.to(session_id).emit('receiveMessage', modMsg);
-
-    // Kick after 3 strikes
-    if (strikes >= 3) {
-      const kickMsg = `@${sender} has been removed from the chat for repeated violations.`;
-      await supabase.from('messages').insert([
-        { session_id, sender: 'moderator', text: kickMsg }
-      ]);
-      io.to(session_id).emit('receiveMessage', {
-        session_id,
-        sender: 'moderator',
-        text: kickMsg,
-        timestamp: new Date().toISOString()
-      });
-
-      io.to(session_id).emit('userKicked', { user: sender });
-      socket.leave(session_id);
-      socket.disconnect(true);
+      console.log('Message saved to database:', data);
+      io.to(session_id).emit('receiveMessage', data); // Broadcast to room
+    } catch (error) {
+      console.error('Error in sendMessage:', error);
     }
-  }
-});
+  });
 
   // Typing indicators
   socket.on('typing-start', (data) => {
@@ -392,8 +295,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', async () => {
     console.log('🔴 User disconnected:', socket.id);
-    userStrikes.delete(socket.id); // Cleanup strikes
-    
+
     // Only attempt to remove if we have the info
     if (socket.user_id && socket.session_id) {
       try {
