@@ -120,66 +120,66 @@ io.on('connection', (socket) => {
 
     // Inactivity Moderator: New feat
     // Avoid multiple intervals for the same session
-  if (sessionTimers.has(sessionId)) return;
+    if (sessionTimers.has(session_id)) return;
 
-  // Fetch session start time
-  const { data: session } = await supabase
-    .from('sessions')
-    .select('*')
-    .eq('id', sessionId)
-    .single();
-
-  const interval = setInterval(async () => {
-    const { data: messages } = await supabase
-      .from('messages')
+    // Fetch session start time
+    const { data: session } = await supabase
+      .from('sessions')
       .select('*')
-      .eq('session_id', sessionId)
-      .order('timestamp', { ascending: false })
-      .limit(5);
+      .eq('id', session_id)
+      .single();
 
-    const lastMessage = messages[0];
-    const now = Date.now();
+    const interval = setInterval(async () => {
+      const { data: messages } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('session_id', session_id)
+        .order('timestamp', { ascending: false })
+        .limit(5);
 
-    if (!lastMessage) {
-      // No conversation yet. If >1 min since session start, spark a convo
-      const sessionStart = new Date(session.created_at).getTime();
-      if (now - sessionStart > 1 * 60 * 1000) {
-        const modText = "Hi there 👋 Just checking in — what brings you here today?";
-        await supabase.from('messages').insert([
-          { session_id: sessionId, sender: 'moderator', text: modText }
-        ]);
+      const lastMessage = messages[0];
+      const now = Date.now();
 
-        io.to(sessionId).emit('receiveMessage', {
-          session_id: sessionId,
-          sender: 'moderator',
-          text: modText,
-          timestamp: new Date().toISOString()
-        });
+      if (!lastMessage) {
+        // No conversation yet. If >1 min since session start, spark a convo
+        const sessionStart = new Date(session.created_at).getTime();
+        if (now - sessionStart > 1 * 60 * 1000) {
+          const modText = "Hi there 👋 Just checking in — what brings you here today?";
+          await supabase.from('messages').insert([
+            { session_id: session_id, sender: 'moderator', text: modText }
+          ]);
+
+          io.to(session_id).emit('receiveMessage', {
+            session_id: session_id,
+            sender: 'moderator',
+            text: modText,
+            timestamp: new Date().toISOString()
+          });
+        }
+      } else {
+        // Messages exist. Check for inactivity > 3 min
+        const lastTime = new Date(lastMessage.timestamp).getTime();
+        const isInactive = now - lastTime > 3 * 60 * 1000;
+
+        if (isInactive) {
+          const reversed = messages.reverse(); // for chronological order
+          const modReply = await getModeratorReply(reversed, session.category);
+
+          await supabase.from('messages').insert([
+            { session_id: session_id, sender: 'moderator', text: modReply }
+          ]);
+
+          io.to(session_id).emit('receiveMessage', {
+            session_id: session_id,
+            sender: 'moderator',
+            text: modReply,
+            timestamp: new Date().toISOString()
+          });
+        }
       }
-    } else {
-      // Messages exist. Check for inactivity > 3 min
-      const lastTime = new Date(lastMessage.timestamp).getTime();
-      const isInactive = now - lastTime > 3 * 60 * 1000;
+    }, 60 * 1000); // Check every minute
 
-      if (isInactive) {
-        const reversed = messages.reverse(); // for chronological order
-        const modReply = await getModeratorReply(reversed, session.category);
-
-        await supabase.from('messages').insert([
-          { session_id: sessionId, sender: 'moderator', text: modReply }
-        ]);
-
-        io.to(sessionId).emit('receiveMessage', {
-          session_id: sessionId,
-          sender: 'moderator',
-          text: modReply,
-          timestamp: new Date().toISOString()
-        });
-      }
-    }
-  }, 60 * 1000); // Check every minute
-
-  sessionTimers.set(sessionId, interval);
+    sessionTimers.set(session_id, interval);
 
     try {
       // Validate session existence
