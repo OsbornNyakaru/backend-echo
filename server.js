@@ -151,8 +151,8 @@ io.on('connection', (socket) => {
         .limit(5);
       console.log('Checked recent messages for inactivity:', messages);
 
-      const lastMessage = messages[0];
-      const now = Date.now();
+    const lastMessage = messages[0];
+    const now = Date.now();
 
       if (!lastMessage) {
         // No conversation yet. If >1 min since session start, spark a convo
@@ -164,36 +164,36 @@ io.on('connection', (socket) => {
           ]);
           console.log('Moderator sparked conversation due to inactivity.');
 
-          io.to(session_id).emit('receiveMessage', {
-            session_id: session_id,
-            sender: 'moderator',
-            text: modText,
-            timestamp: new Date().toISOString()
-          });
-        }
-      } else {
-        // Messages exist. Check for inactivity > 3 min
-        const lastTime = new Date(lastMessage.timestamp).getTime();
-        const isInactive = now - lastTime > 3 * 60 * 1000;
+        io.to(sessionId).emit('receiveMessage', {
+          session_id: sessionId,
+          sender: 'moderator',
+          text: modText,
+          timestamp: new Date().toISOString()
+        });
+      }
+    } else {
+      // Messages exist. Check for inactivity > 3 min
+      const lastTime = new Date(lastMessage.timestamp).getTime();
+      const isInactive = now - lastTime > 3 * 60 * 1000;
 
         if (isInactive) {
           const reversed = messages.reverse(); // for chronological order
           const modReply = await getModeratorReply(reversed, session.category);
           console.log('Moderator replying due to inactivity:', modReply);
 
-          await supabase.from('messages').insert([
-            { session_id: session_id, sender: 'moderator', text: modReply }
-          ]);
+        await supabase.from('messages').insert([
+          { session_id: sessionId, sender: 'moderator', text: modReply }
+        ]);
 
-          io.to(session_id).emit('receiveMessage', {
-            session_id: session_id,
-            sender: 'moderator',
-            text: modReply,
-            timestamp: new Date().toISOString()
-          });
-        }
+        io.to(sessionId).emit('receiveMessage', {
+          session_id: sessionId,
+          sender: 'moderator',
+          text: modReply,
+          timestamp: new Date().toISOString()
+        });
       }
-    }, 60 * 1000); // Check every minute
+    }
+  }, 60 * 1000); // Check every minute
 
     sessionTimers.set(session_id, interval);
     console.log(`Session timer set for session_id: ${session_id}`);
