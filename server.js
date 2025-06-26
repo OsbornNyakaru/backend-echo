@@ -5,7 +5,6 @@ const axios = require('axios');
 require('dotenv').config();
 const http = require('http');
 const { Server } = require('socket.io');
-const { getModeratorReply } = require('./utils/moderator');
 
 // Check for required environment variables
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
@@ -121,66 +120,66 @@ io.on('connection', (socket) => {
 
     // Inactivity Moderator: New feat
     // Avoid multiple intervals for the same session
-    if (sessionTimers.has(session_id)) return;
+  if (sessionTimers.has(sessionId)) return;
 
-    // Fetch session start time
-    const { data: session } = await supabase
-      .from('sessions')
+  // Fetch session start time
+  const { data: session } = await supabase
+    .from('sessions')
+    .select('*')
+    .eq('id', sessionId)
+    .single();
+
+  const interval = setInterval(async () => {
+    const { data: messages } = await supabase
+      .from('messages')
       .select('*')
-      .eq('id', session_id)
-      .single();
+      .eq('session_id', sessionId)
+      .order('timestamp', { ascending: false })
+      .limit(5);
 
-    const interval = setInterval(async () => {
-      const { data: messages } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('session_id', session_id)
-        .order('timestamp', { ascending: false })
-        .limit(5);
+    const lastMessage = messages[0];
+    const now = Date.now();
 
-      const lastMessage = messages[0];
-      const now = Date.now();
+    if (!lastMessage) {
+      // No conversation yet. If >1 min since session start, spark a convo
+      const sessionStart = new Date(session.created_at).getTime();
+      if (now - sessionStart > 1 * 60 * 1000) {
+        const modText = "Hi there 👋 Just checking in — what brings you here today?";
+        await supabase.from('messages').insert([
+          { session_id: sessionId, sender: 'moderator', text: modText }
+        ]);
 
-      if (!lastMessage) {
-        // No conversation yet. If >1 min since session start, spark a convo
-        const sessionStart = new Date(session.created_at).getTime();
-        if (now - sessionStart > 1 * 60 * 1000) {
-          const modText = "Hi there 👋 Just checking in — what brings you here today?";
-          await supabase.from('messages').insert([
-            { session_id: session_id, sender: 'moderator', text: modText }
-          ]);
-
-          io.to(session_id).emit('receiveMessage', {
-            session_id: session_id,
-            sender: 'moderator',
-            text: modText,
-            timestamp: new Date().toISOString()
-          });
-        }
-      } else {
-        // Messages exist. Check for inactivity > 3 min
-        const lastTime = new Date(lastMessage.timestamp).getTime();
-        const isInactive = now - lastTime > 3 * 60 * 1000;
-
-        if (isInactive) {
-          const reversed = messages.reverse(); // for chronological order
-          const modReply = await getModeratorReply(reversed, session.category);
-
-          await supabase.from('messages').insert([
-            { session_id: session_id, sender: 'moderator', text: modReply }
-          ]);
-
-          io.to(session_id).emit('receiveMessage', {
-            session_id: session_id,
-            sender: 'moderator',
-            text: modReply,
-            timestamp: new Date().toISOString()
-          });
-        }
+        io.to(sessionId).emit('receiveMessage', {
+          session_id: sessionId,
+          sender: 'moderator',
+          text: modText,
+          timestamp: new Date().toISOString()
+        });
       }
-    }, 60 * 1000); // Check every minute
+    } else {
+      // Messages exist. Check for inactivity > 3 min
+      const lastTime = new Date(lastMessage.timestamp).getTime();
+      const isInactive = now - lastTime > 3 * 60 * 1000;
 
-    sessionTimers.set(session_id, interval);
+      if (isInactive) {
+        const reversed = messages.reverse(); // for chronological order
+        const modReply = await getModeratorReply(reversed, session.category);
+
+        await supabase.from('messages').insert([
+          { session_id: sessionId, sender: 'moderator', text: modReply }
+        ]);
+
+        io.to(sessionId).emit('receiveMessage', {
+          session_id: sessionId,
+          sender: 'moderator',
+          text: modReply,
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+  }, 60 * 1000); // Check every minute
+
+  sessionTimers.set(sessionId, interval);
 
     try {
       // Validate session existence
@@ -260,90 +259,90 @@ io.on('connection', (socket) => {
   // Handle sending and broadcasting chat messages
   socket.on('sendMessage', async ({ session_id, sender, text, user_id, type = 'text' }) => {
     const originalText = text;
-    const filteredText = filterBadWords(text);
+  const filteredText = filterBadWords(text);
 
-    // 1. Save filtered message to DB
-    const { data: savedMsg, error } = await supabase
+  // 1. Save filtered message to DB
+  const { data: savedMsg, error } = await supabase
+    .from('messages')
+    .insert([{ session_id, sender, text: filteredText }])
+    .select()
+    .single();
+
+  if (error) {
+    console.error('DB Error:', error.message);
+    return;
+  }
+
+  // 2. Emit user message FIRST
+  io.to(session_id).emit('receiveMessage', savedMsg);
+
+  // 3. Handle mod summon
+  if (originalText.toLowerCase().includes('@mod')) {
+    const { data: history } = await supabase
       .from('messages')
-      .insert([{ session_id, sender, text: filteredText, user_id }])
+      .select('*')
+      .eq('session_id', session_id)
+      .order('timestamp', { ascending: false })
+      .limit(5);
+
+    const { data: sessionMeta } = await supabase
+      .from('sessions')
+      .select('*')
+      .eq('id', session_id)
+      .single();
+
+    const modReply = await getModeratorReply(history.reverse(), sessionMeta?.category);
+
+    const { data: modMessage } = await supabase
+      .from('messages')
+      .insert([{ session_id, sender: 'moderator', text: modReply }])
       .select()
       .single();
 
-    if (error) {
-      console.error('DB Error:', error.message);
-      return;
-    }
+    io.to(session_id).emit('receiveMessage', modMessage);
+    return;
+  }
 
-    // 2. Emit user message FIRST
-    io.to(session_id).emit('receiveMessage', savedMsg);
+  // 4. If profanity was detected, warn + have mod respond
+  if (containsBadWords(originalText)) {
+    let strikes = userStrikes.get(socket.id) || 0;
+    strikes++;
+    userStrikes.set(socket.id, strikes);
 
-    // 3. Handle mod summon
-    if (originalText.toLowerCase().includes('@mod')) {
-      const { data: history } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('session_id', session_id)
-        .order('timestamp', { ascending: false })
-        .limit(5);
+    // Private warning -- TODO
+    io.to(socket.id).emit('warning', {
+      message: `⚠️ Inappropriate language detected. Strike ${strikes}/3`
+    });
 
-      const { data: sessionMeta } = await supabase
-        .from('sessions')
-        .select('*')
-        .eq('id', session_id)
-        .single();
+    // Public moderator warning
+    const modText = `@${sender}, please watch your language. This is strike ${strikes}/3.`;
+    const { data: modMsg } = await supabase
+      .from('messages')
+      .insert([{ session_id, sender: 'moderator', text: modText }])
+      .select()
+      .single();
 
-      const modReply = await getModeratorReply(history.reverse(), sessionMeta?.category);
+    io.to(session_id).emit('receiveMessage', modMsg);
 
-      const { data: modMessage } = await supabase
-        .from('messages')
-        .insert([{ session_id, sender: 'moderator', text: modReply }])
-        .select()
-        .single();
-
-      io.to(session_id).emit('receiveMessage', modMessage);
-      return;
-    }
-
-    // 4. If profanity was detected, warn + have mod respond
-    if (containsBadWords(originalText)) {
-      let strikes = userStrikes.get(socket.id) || 0;
-      strikes++;
-      userStrikes.set(socket.id, strikes);
-
-      // Private warning -- TODO
-      io.to(socket.id).emit('warning', {
-        message: `⚠️ Inappropriate language detected. Strike ${strikes}/3`
+    // Kick after 3 strikes
+    if (strikes >= 3) {
+      const kickMsg = `@${sender} has been removed from the chat for repeated violations.`;
+      await supabase.from('messages').insert([
+        { session_id, sender: 'moderator', text: kickMsg }
+      ]);
+      io.to(session_id).emit('receiveMessage', {
+        session_id,
+        sender: 'moderator',
+        text: kickMsg,
+        timestamp: new Date().toISOString()
       });
 
-      // Public moderator warning
-      const modText = `@${sender}, please watch your language. This is strike ${strikes}/3.`;
-      const { data: modMsg } = await supabase
-        .from('messages')
-        .insert([{ session_id, sender: 'moderator', text: modText }])
-        .select()
-        .single();
-
-      io.to(session_id).emit('receiveMessage', modMsg);
-
-      // Kick after 3 strikes
-      if (strikes >= 3) {
-        const kickMsg = `@${sender} has been removed from the chat for repeated violations.`;
-        await supabase.from('messages').insert([
-          { session_id, sender: 'moderator', text: kickMsg }
-        ]);
-        io.to(session_id).emit('receiveMessage', {
-          session_id,
-          sender: 'moderator',
-          text: kickMsg,
-          timestamp: new Date().toISOString()
-        });
-
-        io.to(session_id).emit('userKicked', { user: sender });
-        socket.leave(session_id);
-        socket.disconnect(true);
-      }
+      io.to(session_id).emit('userKicked', { user: sender });
+      socket.leave(session_id);
+      socket.disconnect(true);
     }
-  });
+  }
+});
 
   // Typing indicators
   socket.on('typing-start', (data) => {
