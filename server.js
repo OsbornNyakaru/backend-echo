@@ -130,7 +130,7 @@ io.on('connection', (socket) => {
     // Inactivity Moderator: New feat
     // Avoid multiple intervals for the same session
     if (sessionTimers.has(sessionId)) {
-      console.log(`Session timer already exists for session_id: ${session_id}`);
+      console.log(`Session timer already exists for session_id: ${sessionId}`);
       return;
     }
 
@@ -146,7 +146,7 @@ io.on('connection', (socket) => {
       const { data: messages } = await supabase
         .from('messages')
         .select('*')
-        .eq('session_id', session_id)
+        .eq('session_id', sessionId)
         .order('timestamp', { ascending: false })
         .limit(5);
       console.log('Checked recent messages for inactivity:', messages);
