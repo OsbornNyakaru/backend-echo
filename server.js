@@ -33,7 +33,7 @@ const io = new Server(server, {
 
 const allowedOrigins = [
   'https://cosmic-meerkat-92b882.netlify.app', // your deployed frontend
-  'https://echoroomio.netlify.app/', // your deployed frontend
+  'https://echoroomio.netlify.app', // your deployed frontend
   'http://localhost:5173',                     // your local dev frontend
 ];
 
