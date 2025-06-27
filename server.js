@@ -146,7 +146,7 @@ io.on('connection', (socket) => {
       const { data: messages } = await supabase
         .from('messages')
         .select('*')
-        .eq('session_id', session_id)
+        .eq('session_id', sessionId)
         .order('timestamp', { ascending: false })
         .limit(5);
       console.log('Checked recent messages for inactivity:', messages);
