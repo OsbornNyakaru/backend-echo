@@ -115,8 +115,25 @@ function filterBadWords(text) {
 // Track strikes: socket.id -> count
 const userStrikes = new Map();
 
-// Inactivity Moderator
+// Inactivity Moderator - Track timers and last activity
 const sessionTimers = new Map();
+const sessionLastActivity = new Map(); // Track last activity time per session
+
+// Helper function to update last activity time
+function updateSessionActivity(session_id) {
+  sessionLastActivity.set(session_id, Date.now());
+  console.log(`🕒 [SERVER] Updated last activity for session ${session_id}`);
+}
+
+// Helper function to clear session timer
+function clearSessionTimer(session_id) {
+  const timer = sessionTimers.get(session_id);
+  if (timer) {
+    clearInterval(timer);
+    sessionTimers.delete(session_id);
+    console.log(`🛑 [SERVER] Cleared session timer for ${session_id}`);
+  }
+}
 
 // Socket.IO event handlers for real-time features
 io.on('connection', (socket) => {
@@ -151,12 +168,26 @@ io.on('connection', (socket) => {
       socket.session_id = session_id;
       socket.user_id = user_id;
 
+      // Update session activity
+      updateSessionActivity(session_id);
+
       // Set up inactivity moderator for this session (only once per session)
       if (!sessionTimers.has(session_id)) {
         console.log(`🤖 [SERVER] Setting up inactivity moderator for session ${session_id}`);
         
         const interval = setInterval(async () => {
           try {
+            const lastActivity = sessionLastActivity.get(session_id) || Date.now();
+            const now = Date.now();
+            const timeSinceLastActivity = now - lastActivity;
+
+            // Check if there's been any activity in the last 3 minutes
+            if (timeSinceLastActivity < 3 * 60 * 1000) {
+              console.log(`⏰ [SERVER] Session ${session_id} has recent activity, skipping moderator check`);
+              return;
+            }
+
+            // Fetch recent messages to double-check
             const { data: messages } = await supabase
               .from('messages')
               .select('*')
@@ -165,7 +196,6 @@ io.on('connection', (socket) => {
               .limit(5);
 
             const lastMessage = messages?.[0];
-            const now = Date.now();
 
             if (!lastMessage) {
               // No conversation yet. If >1 min since session start, spark a convo
@@ -178,25 +208,46 @@ io.on('connection', (socket) => {
                   .select()
                   .single();
 
-                console.log('🤖 [SERVER] Moderator sparked conversation due to inactivity');
+                console.log('🤖 [SERVER] Moderator sparked conversation due to no messages');
                 io.to(session_id).emit('receiveMessage', modMessage);
+                
+                // Update activity after moderator message
+                updateSessionActivity(session_id);
               }
             } else {
-              // Messages exist. Check for inactivity > 3 min
-              const lastTime = new Date(lastMessage.timestamp).getTime();
-              const isInactive = now - lastTime > 3 * 60 * 1000;
+              // Check if last message was from moderator - if so, don't send another
+              if (lastMessage.sender === 'moderator') {
+                const modMessageTime = new Date(lastMessage.timestamp).getTime();
+                const timeSinceModMessage = now - modMessageTime;
+                
+                // Only send another mod message if it's been more than 5 minutes since last mod message
+                if (timeSinceModMessage < 5 * 60 * 1000) {
+                  console.log(`🤖 [SERVER] Moderator recently sent message in session ${session_id}, skipping`);
+                  return;
+                }
+              }
 
-              if (isInactive) {
-                const reversed = messages.reverse(); // for chronological order
-                const modReply = await getModeratorReply(reversed, sessionData.category);
-                const { data: modMessage } = await supabase
-                  .from('messages')
-                  .insert([{ session_id, sender: 'moderator', text: modReply }])
-                  .select()
-                  .single();
+              // Check for user inactivity (no user messages in 3+ minutes)
+              const lastUserMessage = messages.find(msg => msg.sender !== 'moderator');
+              if (lastUserMessage) {
+                const lastUserTime = new Date(lastUserMessage.timestamp).getTime();
+                const isUserInactive = now - lastUserTime > 3 * 60 * 1000;
 
-                console.log('🤖 [SERVER] Moderator replying due to inactivity');
-                io.to(session_id).emit('receiveMessage', modMessage);
+                if (isUserInactive) {
+                  const reversed = messages.reverse(); // for chronological order
+                  const modReply = await getModeratorReply(reversed, sessionData.category);
+                  const { data: modMessage } = await supabase
+                    .from('messages')
+                    .insert([{ session_id, sender: 'moderator', text: modReply }])
+                    .select()
+                    .single();
+
+                  console.log('🤖 [SERVER] Moderator replying due to user inactivity');
+                  io.to(session_id).emit('receiveMessage', modMessage);
+                  
+                  // Update activity after moderator message
+                  updateSessionActivity(session_id);
+                }
               }
             }
           } catch (error) {
@@ -269,6 +320,19 @@ io.on('connection', (socket) => {
         console.log(`✅ [SERVER] Participant ${user_id} removed from session ${session_id}`);
       }
 
+      // Check if this was the last user in the session
+      const { data: remainingParticipants } = await supabase
+        .from('participants')
+        .select('user_id')
+        .eq('session_id', session_id);
+
+      // If no participants left, clear the session timer
+      if (!remainingParticipants || remainingParticipants.length === 0) {
+        console.log(`🛑 [SERVER] No participants left in session ${session_id}, clearing timer`);
+        clearSessionTimer(session_id);
+        sessionLastActivity.delete(session_id);
+      }
+
       // Notify others in the room
       console.log(`📤 [SERVER] Emitting user-left to room ${session_id}`);
       io.to(session_id).emit('user-left', { user_id });
@@ -284,6 +348,9 @@ io.on('connection', (socket) => {
     const filteredText = filterBadWords(text);
 
     try {
+      // Update session activity for any message (including moderator)
+      updateSessionActivity(session_id);
+
       // 1. Save filtered message to DB
       const { data: savedMsg, error } = await supabase
         .from('messages')
@@ -300,8 +367,8 @@ io.on('connection', (socket) => {
       console.log(`📤 [SERVER] Emitting receiveMessage to room ${session_id}`);
       io.to(session_id).emit('receiveMessage', savedMsg);
 
-      // 3. Handle mod summon
-      if (originalText.toLowerCase().includes('@mod')) {
+      // 3. Handle mod summon (only for non-moderator messages)
+      if (sender !== 'moderator' && originalText.toLowerCase().includes('@mod')) {
         console.log('🤖 [SERVER] Moderator summoned in message');
         const { data: history } = await supabase
           .from('messages')
@@ -320,12 +387,17 @@ io.on('connection', (socket) => {
           .insert([{ session_id, sender: 'moderator', text: modReply }])
           .select()
           .single();
+        
+        console.log('🤖 [SERVER] Moderator responding to summon');
         io.to(session_id).emit('receiveMessage', modMessage);
+        
+        // Update activity after moderator response
+        updateSessionActivity(session_id);
         return;
       }
 
-      // 4. If profanity was detected, warn + have mod respond
-      if (containsBadWords(originalText)) {
+      // 4. If profanity was detected (only for non-moderator messages), warn + have mod respond
+      if (sender !== 'moderator' && containsBadWords(originalText)) {
         let strikes = userStrikes.get(socket.id) || 0;
         strikes++;
         userStrikes.set(socket.id, strikes);
@@ -344,6 +416,9 @@ io.on('connection', (socket) => {
           .select()
           .single();
         io.to(session_id).emit('receiveMessage', modMsg);
+
+        // Update activity after moderator warning
+        updateSessionActivity(session_id);
 
         // Kick after 3 strikes
         if (strikes >= 3) {
@@ -368,6 +443,10 @@ io.on('connection', (socket) => {
   socket.on('typing-start', (data) => {
     console.log('🔵 [SERVER] typing-start event:', data);
     const { session_id, user_id, username } = data;
+    
+    // Update activity when user starts typing
+    updateSessionActivity(session_id);
+    
     socket.to(session_id).emit('typing-start', { user_id, username });
   });
 
@@ -397,6 +476,11 @@ io.on('connection', (socket) => {
       if (session_id) {
         console.log(`📤 [SERVER] Emitting voice-status to room ${session_id}`);
         io.to(session_id).emit('voice-status', { user_id: userId, isSpeaking, isMuted });
+        
+        // Update activity when user speaks
+        if (isSpeaking) {
+          updateSessionActivity(session_id);
+        }
       }
     } catch (error) {
       console.error('❌ [SERVER] Error in voice-status:', error);
@@ -431,6 +515,20 @@ io.on('connection', (socket) => {
           console.error('❌ [SERVER] Error removing participant on disconnect:', deleteError.message);
         } else {
           console.log(`✅ [SERVER] Participant ${socket.user_id} removed from session ${socket.session_id} on disconnect`);
+          
+          // Check if this was the last user in the session
+          const { data: remainingParticipants } = await supabase
+            .from('participants')
+            .select('user_id')
+            .eq('session_id', socket.session_id);
+
+          // If no participants left, clear the session timer
+          if (!remainingParticipants || remainingParticipants.length === 0) {
+            console.log(`🛑 [SERVER] No participants left in session ${socket.session_id}, clearing timer`);
+            clearSessionTimer(socket.session_id);
+            sessionLastActivity.delete(socket.session_id);
+          }
+          
           // Notify others in the room
           io.to(socket.session_id).emit('user-left', { user_id: socket.user_id });
         }
