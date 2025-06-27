@@ -135,6 +135,44 @@ function clearSessionTimer(session_id) {
   }
 }
 
+// Helper function to send moderator message
+async function sendModeratorMessage(session_id, text) {
+  try {
+    console.log(`🤖 [SERVER] Sending moderator message to session ${session_id}:`, text);
+    
+    // Save moderator message to database
+    const { data: modMessage, error } = await supabase
+      .from('messages')
+      .insert([{ 
+        session_id: session_id, 
+        sender: 'moderator', 
+        text: text,
+        user_id: 'moderator-system'
+      }])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('❌ [SERVER] Error saving moderator message to DB:', error.message);
+      return false;
+    }
+
+    console.log('✅ [SERVER] Moderator message saved to DB:', modMessage);
+
+    // Broadcast the message to all users in the session
+    io.to(session_id).emit('receiveMessage', modMessage);
+    console.log(`📤 [SERVER] Moderator message broadcasted to session ${session_id}`);
+    
+    // Update session activity after moderator message
+    updateSessionActivity(session_id);
+    
+    return true;
+  } catch (error) {
+    console.error('❌ [SERVER] Error in sendModeratorMessage:', error);
+    return false;
+  }
+}
+
 // Socket.IO event handlers for real-time features
 io.on('connection', (socket) => {
   console.log('🟢 A user connected:', socket.id);
@@ -181,6 +219,8 @@ io.on('connection', (socket) => {
             const now = Date.now();
             const timeSinceLastActivity = now - lastActivity;
 
+            console.log(`⏰ [SERVER] Checking session ${session_id} - Time since last activity: ${Math.floor(timeSinceLastActivity / 1000)}s`);
+
             // Check if there's been any activity in the last 3 minutes
             if (timeSinceLastActivity < 3 * 60 * 1000) {
               console.log(`⏰ [SERVER] Session ${session_id} has recent activity, skipping moderator check`);
@@ -188,41 +228,38 @@ io.on('connection', (socket) => {
             }
 
             // Fetch recent messages to double-check
-            const { data: messages } = await supabase
+            const { data: messages, error: messagesError } = await supabase
               .from('messages')
               .select('*')
               .eq('session_id', session_id)
               .order('timestamp', { ascending: false })
-              .limit(5);
+              .limit(10);
+
+            if (messagesError) {
+              console.error('❌ [SERVER] Error fetching messages for moderator check:', messagesError.message);
+              return;
+            }
 
             const lastMessage = messages?.[0];
+            console.log(`🤖 [SERVER] Last message in session ${session_id}:`, lastMessage ? `"${lastMessage.text}" by ${lastMessage.sender}` : 'No messages');
 
             if (!lastMessage) {
               // No conversation yet. If >1 min since session start, spark a convo
               const sessionStart = new Date(sessionData.created_at).getTime();
               if (now - sessionStart > 1 * 60 * 1000) {
                 const modText = "Hi there 👋 Just checking in — what brings you here today?";
-                const { data: modMessage } = await supabase
-                  .from('messages')
-                  .insert([{ session_id: session_id, sender: 'moderator', text: modText }])
-                  .select()
-                  .single();
-
-                console.log('🤖 [SERVER] Moderator sparked conversation due to no messages');
-                io.to(session_id).emit('receiveMessage', modMessage);
-                
-                // Update activity after moderator message
-                updateSessionActivity(session_id);
+                console.log('🤖 [SERVER] No messages found, sending initial moderator message');
+                await sendModeratorMessage(session_id, modText);
               }
             } else {
-              // Check if last message was from moderator - if so, don't send another
+              // Check if last message was from moderator - if so, don't send another immediately
               if (lastMessage.sender === 'moderator') {
                 const modMessageTime = new Date(lastMessage.timestamp).getTime();
                 const timeSinceModMessage = now - modMessageTime;
                 
                 // Only send another mod message if it's been more than 5 minutes since last mod message
                 if (timeSinceModMessage < 5 * 60 * 1000) {
-                  console.log(`🤖 [SERVER] Moderator recently sent message in session ${session_id}, skipping`);
+                  console.log(`🤖 [SERVER] Moderator recently sent message in session ${session_id} (${Math.floor(timeSinceModMessage / 1000)}s ago), skipping`);
                   return;
                 }
               }
@@ -231,23 +268,23 @@ io.on('connection', (socket) => {
               const lastUserMessage = messages.find(msg => msg.sender !== 'moderator');
               if (lastUserMessage) {
                 const lastUserTime = new Date(lastUserMessage.timestamp).getTime();
-                const isUserInactive = now - lastUserTime > 3 * 60 * 1000;
+                const timeSinceUserMessage = now - lastUserTime;
+                const isUserInactive = timeSinceUserMessage > 3 * 60 * 1000;
+
+                console.log(`🤖 [SERVER] Last user message was ${Math.floor(timeSinceUserMessage / 1000)}s ago. User inactive: ${isUserInactive}`);
 
                 if (isUserInactive) {
+                  console.log('🤖 [SERVER] User inactivity detected, generating moderator response');
                   const reversed = messages.reverse(); // for chronological order
                   const modReply = await getModeratorReply(reversed, sessionData.category);
-                  const { data: modMessage } = await supabase
-                    .from('messages')
-                    .insert([{ session_id, sender: 'moderator', text: modReply }])
-                    .select()
-                    .single();
-
-                  console.log('🤖 [SERVER] Moderator replying due to user inactivity');
-                  io.to(session_id).emit('receiveMessage', modMessage);
-                  
-                  // Update activity after moderator message
-                  updateSessionActivity(session_id);
+                  console.log('🤖 [SERVER] Generated moderator reply:', modReply);
+                  await sendModeratorMessage(session_id, modReply);
                 }
+              } else {
+                // Only moderator messages exist, send a user engagement message
+                console.log('🤖 [SERVER] Only moderator messages found, sending engagement message');
+                const modText = "I'd love to hear from someone! What's on your mind today?";
+                await sendModeratorMessage(session_id, modText);
               }
             }
           } catch (error) {
@@ -382,17 +419,8 @@ io.on('connection', (socket) => {
           .eq('id', session_id)
           .single();
         const modReply = await getModeratorReply(history.reverse(), sessionMeta?.category);
-        const { data: modMessage } = await supabase
-          .from('messages')
-          .insert([{ session_id, sender: 'moderator', text: modReply }])
-          .select()
-          .single();
-        
-        console.log('🤖 [SERVER] Moderator responding to summon');
-        io.to(session_id).emit('receiveMessage', modMessage);
-        
-        // Update activity after moderator response
-        updateSessionActivity(session_id);
+        console.log('🤖 [SERVER] Moderator responding to summon with:', modReply);
+        await sendModeratorMessage(session_id, modReply);
         return;
       }
 
@@ -410,25 +438,12 @@ io.on('connection', (socket) => {
 
         // Public moderator warning
         const modText = `@${sender}, please watch your language. This is strike ${strikes}/3.`;
-        const { data: modMsg } = await supabase
-          .from('messages')
-          .insert([{ session_id, sender: 'moderator', text: modText }])
-          .select()
-          .single();
-        io.to(session_id).emit('receiveMessage', modMsg);
-
-        // Update activity after moderator warning
-        updateSessionActivity(session_id);
+        await sendModeratorMessage(session_id, modText);
 
         // Kick after 3 strikes
         if (strikes >= 3) {
           const kickMsg = `@${sender} has been removed from the chat for repeated violations.`;
-          const { data: kickMessage } = await supabase
-            .from('messages')
-            .insert([{ session_id, sender: 'moderator', text: kickMsg }])
-            .select()
-            .single();
-          io.to(session_id).emit('receiveMessage', kickMessage);
+          await sendModeratorMessage(session_id, kickMsg);
           io.to(session_id).emit('userKicked', { user: sender });
           socket.leave(session_id);
           socket.disconnect(true);
