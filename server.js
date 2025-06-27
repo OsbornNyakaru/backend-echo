@@ -125,7 +125,7 @@ io.on('connection', (socket) => {
   // User joins a session/room
   socket.on('joinRoom', async (data) => {
     console.log('joinRoom event received:', data);
-    const { session_id, user_id, username, mood } = data;
+    const { session_id: sessionId, user_id, username, mood } = data;
 
     // Inactivity Moderator: New feat
     // Avoid multiple intervals for the same session
@@ -200,7 +200,7 @@ io.on('connection', (socket) => {
 
     try {
       // Validate session existence
-      const { data: existingSession, error: fetchError } = await supabase
+      const { error: fetchError } = await supabase
         .from('sessions')
         .select('id')
         .eq('id', sessionId)
@@ -238,7 +238,7 @@ io.on('connection', (socket) => {
       });
 
       // Store user info on the socket for later use
-      socket.session_id = session_id;
+      socket.session_id = sessionId;
       socket.user_id = user_id;
     } catch (error) {
       console.error('Error in joinRoom:', error);
@@ -249,17 +249,17 @@ io.on('connection', (socket) => {
   // User leaves a session/room
   socket.on('leaveRoom', async (data) => {
     console.log('leaveRoom event received:', data);
-    const { session_id, user_id } = data;
+    const { session_id: sessionId, user_id } = data;
     try {
-      socket.leave(session_id);
-      console.log(`User ${user_id} left session ${session_id}`);
+      socket.leave(sessionId);
+      console.log(`User ${user_id} left session ${sessionId}`);
 
       // Remove participant from DB
       const { error: deleteError } = await supabase
         .from('participants')
         .delete()
         .eq('user_id', user_id)
-        .eq('session_id', session_id);
+        .eq('session_id', sessionId);
       if (deleteError) {
         console.error('Error removing participant:', deleteError.message);
       } else {
@@ -267,7 +267,7 @@ io.on('connection', (socket) => {
       }
 
       // Notify others in the room
-      io.to(session_id).emit('user-left', { user_id });
+      io.to(sessionId).emit('user-left', { user_id });
     } catch (error) {
       console.error('Error in leaveRoom:', error);
     }
