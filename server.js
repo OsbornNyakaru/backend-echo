@@ -33,7 +33,7 @@ const io = new Server(server, {
 
 const allowedOrigins = [
   'https://cosmic-meerkat-92b882.netlify.app', // your deployed frontend
-  'https://echoroomio.netlify.app', // your deployed frontend
+  'https://echoroomio.netlify.app/', // your deployed frontend
   'http://localhost:5173',                     // your local dev frontend
 ];
 
@@ -119,6 +119,9 @@ const userStrikes = new Map();
 const sessionTimers = new Map();
 const sessionLastActivity = new Map(); // Track last activity time per session
 
+// Fixed UUID for moderator system
+const MODERATOR_UUID = '00000000-0000-4000-8000-000000000000';
+
 // Helper function to update last activity time
 function updateSessionActivity(session_id) {
   sessionLastActivity.set(session_id, Date.now());
@@ -140,14 +143,14 @@ async function sendModeratorMessage(session_id, text) {
   try {
     console.log(`🤖 [SERVER] Sending moderator message to session ${session_id}:`, text);
     
-    // Save moderator message to database
+    // Save moderator message to database with fixed UUID
     const { data: modMessage, error } = await supabase
       .from('messages')
       .insert([{ 
         session_id: session_id, 
         sender: 'moderator', 
         text: text,
-        user_id: 'moderator-system'
+        user_id: MODERATOR_UUID // Use fixed UUID for moderator
       }])
       .select()
       .single();
