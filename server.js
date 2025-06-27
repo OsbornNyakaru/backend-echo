@@ -125,12 +125,12 @@ io.on('connection', (socket) => {
   // User joins a session/room
   socket.on('joinRoom', async (data) => {
     console.log('joinRoom event received:', data);
-    const { session_id: sessionId, user_id, username, mood } = data;
+    const { session_id, user_id, username, mood } = data;
 
     // Inactivity Moderator: New feat
     // Avoid multiple intervals for the same session
-    if (sessionTimers.has(sessionId)) {
-      console.log(`Session timer already exists for session_id: ${sessionId}`);
+    if (sessionTimers.has(session_id)) {
+      console.log(`Session timer already exists for session_id: ${session_id}`);
       return;
     }
 
@@ -138,7 +138,7 @@ io.on('connection', (socket) => {
     const { data: session } = await supabase
       .from('sessions')
       .select('*')
-      .eq('id', sessionId)
+      .eq('id', session_id)
       .single();
     console.log('Fetched session for inactivity moderator:', session);
 
@@ -146,13 +146,13 @@ io.on('connection', (socket) => {
       const { data: messages } = await supabase
         .from('messages')
         .select('*')
-        .eq('session_id', sessionId)
+        .eq('session_id', session_id)
         .order('timestamp', { ascending: false })
         .limit(5);
       console.log('Checked recent messages for inactivity:', messages);
 
-    const lastMessage = messages[0];
-    const now = Date.now();
+      const lastMessage = messages[0];
+      const now = Date.now();
 
       if (!lastMessage) {
         // No conversation yet. If >1 min since session start, spark a convo
@@ -160,64 +160,64 @@ io.on('connection', (socket) => {
         if (now - sessionStart > 1 * 60 * 1000) {
           const modText = "Hi there 👋 Just checking in — what brings you here today?";
           await supabase.from('messages').insert([
-            { session_id: sessionId, sender: 'moderator', text: modText }
+            { session_id: session_id, sender: 'moderator', text: modText }
           ]);
           console.log('Moderator sparked conversation due to inactivity.');
 
-        io.to(sessionId).emit('receiveMessage', {
-          session_id: sessionId,
-          sender: 'moderator',
-          text: modText,
-          timestamp: new Date().toISOString()
-        });
-      }
-    } else {
-      // Messages exist. Check for inactivity > 3 min
-      const lastTime = new Date(lastMessage.timestamp).getTime();
-      const isInactive = now - lastTime > 3 * 60 * 1000;
+          io.to(session_id).emit('receiveMessage', {
+            session_id: session_id,
+            sender: 'moderator',
+            text: modText,
+            timestamp: new Date().toISOString()
+          });
+        }
+      } else {
+        // Messages exist. Check for inactivity > 3 min
+        const lastTime = new Date(lastMessage.timestamp).getTime();
+        const isInactive = now - lastTime > 3 * 60 * 1000;
 
         if (isInactive) {
           const reversed = messages.reverse(); // for chronological order
           const modReply = await getModeratorReply(reversed, session.category);
           console.log('Moderator replying due to inactivity:', modReply);
 
-        await supabase.from('messages').insert([
-          { session_id: sessionId, sender: 'moderator', text: modReply }
-        ]);
+          await supabase.from('messages').insert([
+            { session_id: session_id, sender: 'moderator', text: modReply }
+          ]);
 
-        io.to(sessionId).emit('receiveMessage', {
-          session_id: sessionId,
-          sender: 'moderator',
-          text: modReply,
-          timestamp: new Date().toISOString()
-        });
+          io.to(session_id).emit('receiveMessage', {
+            session_id: session_id,
+            sender: 'moderator',
+            text: modReply,
+            timestamp: new Date().toISOString()
+          });
+        }
       }
-    }
-  }, 60 * 1000); // Check every minute
+    }, 60 * 1000); // Check every minute
 
-    sessionTimers.set(sessionId, interval);
-    console.log(`Session timer set for session_id: ${sessionId}`);
+    sessionTimers.set(session_id, interval);
+    console.log(`Session timer set for session_id: ${session_id}`);
 
     try {
       // Validate session existence
       const { error: fetchError } = await supabase
         .from('sessions')
         .select('id')
-        .eq('id', sessionId)
+        .eq('id', session_id)
         .single();
       if (fetchError) {
-        console.error(`Error fetching session ${sessionId}:`, fetchError.message);
+        console.error(`Error fetching session ${session_id}:`, fetchError.message);
         socket.emit('error', { message: 'Session not found' });
         return;
       }
-      socket.join(sessionId); // Join the socket.io room
-      console.log(`User ${user_id} (${username}) joined session ${sessionId} with mood ${mood}`);
+      socket.join(session_id); // Join the socket.io room
+      console.log(`User ${user_id} (${username}) joined session ${session_id} with mood ${mood}`);
 
       // Fetch current participants
       const { data: participantsData, error: participantsError } = await supabase
         .from('participants')
         .select('*')
-        .eq('session_id', sessionId);
+        .eq('session_id', session_id);
       if (participantsError) {
         console.error('Error fetching participants:', participantsError.message);
         socket.emit('error', { message: 'Failed to fetch participants' });
@@ -226,8 +226,8 @@ io.on('connection', (socket) => {
       console.log('Participants in session:', participantsData);
 
       // Notify the user and others in the room
-      socket.emit('room-joined', { sessionId, participants: participantsData });
-      socket.to(sessionId).emit('user-joined', {
+      socket.emit('room-joined', { session_id: session_id, participants: participantsData });
+      socket.to(session_id).emit('user-joined', {
         user_id,
         user_name: username,
         username,
@@ -238,7 +238,7 @@ io.on('connection', (socket) => {
       });
 
       // Store user info on the socket for later use
-      socket.session_id = sessionId;
+      socket.session_id = session_id;
       socket.user_id = user_id;
     } catch (error) {
       console.error('Error in joinRoom:', error);
@@ -249,25 +249,25 @@ io.on('connection', (socket) => {
   // User leaves a session/room
   socket.on('leaveRoom', async (data) => {
     console.log('leaveRoom event received:', data);
-    const { session_id: sessionId, user_id } = data;
+    const { session_id, user_id } = data;
     try {
-      socket.leave(sessionId);
-      console.log(`User ${user_id} left session ${sessionId}`);
+      socket.leave(session_id);
+      console.log(`User ${user_id} left session ${session_id}`);
 
       // Remove participant from DB
       const { error: deleteError } = await supabase
         .from('participants')
         .delete()
         .eq('user_id', user_id)
-        .eq('session_id', sessionId);
+        .eq('session_id', session_id);
       if (deleteError) {
         console.error('Error removing participant:', deleteError.message);
       } else {
-        console.log(`Participant ${user_id} removed from session ${sessionId}`);
+        console.log(`Participant ${user_id} removed from session ${session_id}`);
       }
 
       // Notify others in the room
-      io.to(sessionId).emit('user-left', { user_id });
+      io.to(session_id).emit('user-left', { user_id });
     } catch (error) {
       console.error('Error in leaveRoom:', error);
     }
@@ -445,11 +445,11 @@ app.use((err, req, res, next) => {
 // EJS server-rendered chat room page
 app.get('/session/:id', async (req, res) => {
   console.log('GET /session/:id called with id:', req.params.id);
-  const sessionId = req.params.id;
+  const session_id = req.params.id;
   const { data: session, error: sessionError } = await supabase
     .from('sessions')
     .select('*')
-    .eq('id', sessionId)
+    .eq('id', session_id)
     .single();
   if (sessionError) {
     console.error('Session not found:', sessionError.message);
@@ -458,14 +458,14 @@ app.get('/session/:id', async (req, res) => {
   const { data: messages, error: messagesError } = await supabase
     .from('messages')
     .select('*')
-    .eq('session_id', sessionId)
+    .eq('session_id', session_id)
     .order('timestamp', { ascending: true });
   if (messagesError) {
     console.error('DB Error fetching messages:', messagesError.message);
     return res.status(500).send('DB Error');
   }
-  console.log(`Rendering chat for session ${sessionId} with ${messages.length} messages.`);
-  res.render('chat', { sessionId, session, messages });
+  console.log(`Rendering chat for session ${session_id} with ${messages.length} messages.`);
+  res.render('chat', { session_id, session, messages });
 });
 
 // EJS server-rendered landing page
